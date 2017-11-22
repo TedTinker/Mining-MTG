@@ -1,0 +1,525 @@
+---
+title: "MTGJSON.Rmd"
+author: "Ted Tinker and Lilian Lu"
+date: "November 21, 2017"
+output: pdf_document
+---
+
+\section{Abstract}
+
+Magic: The Gathering is a collectible-card-game set in a fantasy multiverse. Since its introduction in 1993 more than 17,000 MTG cards have been designed and published in more than seventy sets. Information on these cards is available in a JSON file from mtgjson.com, but this format is inconvenient in Rstudio. In this project we parce the JSON file into a dataframe so we may use Rstudio to answer the following questions:
+
+\null 
+
+\noindent
+How does a card's color-identity (either colorless or any combination of the colors white(W), blue(U), black(B), red(R), and green(G)) influence the rest of its statistics? Based on that, can a card's statistics be used to algorithmically predict its color-identity? How has the relation between color-identity and statistics changed over Magic's lifetime? And, how do these questions relate to the design philosophy of Magic's creators? (Data mining techniques used, key results, conclusions.)
+
+\section{Introduction}
+
+Our primary goal is to consistently algorithmically sort Magic: The Gathering cards by color-identity based on the rest of their statistics. This will be difficult because Magic: The Gathering cards come in a variety of types and levels of complexity, and color-identity is the product of subjective game-design considerations by the designers. Expert humans are able to assign color-identities to cards with ease; Mark Rosewater, Magic: The Gathering's head designer, arbitrates the color-philosophies with intricate precision. In "Mechanical Color Pie 2017" he associates every keyword in the game's standard lexicon with each color at one of four different levels: primary, secondary, tertiary, or none of the above. Given the detailed knowledge required to accurately enforce the color-philosophies, an algorithm for assigning color-identity based on card-data may be useful for designing the game, or understanding the game's design.
+
+\null 
+
+\noindent
+This project is inspired by the RoboRosewater twitter account. This twitter account posts the output of a neural network trained on Magic: The Gathering cards. Some of RoboRosewater's cards are humorously unreadable; others are syntactically correct and theoretically playable. However, even RoboRosewater's best cards have mismatched color-identities as the program cannot grasp the subtle intricacies of "flavor," or relation to in-game lore and philosophies. This project endeavors to improve color-identity identification.
+
+\null 
+
+\noindent
+The dataset of all Magic: The Gathering cards was downloaded from mtgjson.com in the form of a JSON file. JSON is a natural choice for Magic: The Gathering cards because the cards have inconsistant variables present based on their card-type. Some variables have high consistency (for example, each card has a name), but some variables may not be present on all card types (for example, only creature cards have power and toughness), and some variables are lists whose lengths vary from card to card (for example, the list of all sets in which the card was printed). The data was most likely scraped from Gatherer, Magic's offical online card index. Therefore the data is most likely accurate, up-to-date, and complete, but in a format which Rstudio cannot easily handle. 
+
+\null 
+
+\noindent
+(Clear description of the problem and techniques we will use. Briefly describe results, good and bad, and conclusions.)
+
+\section{Data and Methods}
+```{r setup,results="hide"}
+# install.packages("tidyverse")       # Installation only necessary on the first run
+# install.packages("rjson")
+# install.packages("gtools")
+# install.packages("stringr")
+# install.packages("ggplot2")
+
+library(tidyverse)
+library(rjson)      # To read JSON
+library(gtools)   
+library(stringr)    # To interact with strings
+library(ggplot2)    # Nice plots
+
+setwd("/Users/Theodore/Desktop/R_Studio_Stuff/data")  # Change this to your own working directory
+MTG.json <- fromJSON(file="AllCards.json",method='C') 
+    # JSON file from https://mtgjson.com (not great for R)
+
+rows=17761    # When testing, decrease this so you don't use the whole data-set every time
+
+MTG.df <- data.frame(matrix(ncol=21,nrow=rows))   # Start with 21 variables; others are generated.
+```
+Here is an example of a typical card in JSON format:
+```{r jsonExample}
+MTG.json[["Serra Angel"]]
+```
+Clearly this must be parsed to yield useful information in Rstudio. The following chunk should probably be run in a separate script for stability reasons.
+```{r parse, cache=TRUE,eval=FALSE}
+# The function "isItThere" is vital to parsing JSON. 
+# Nested lists and inconsistant variable types require it 
+# for producing consistant dataframe row-lengths.
+# The argument "json" is a JSON object.
+# "x" is the position in the JSON list to open; 
+# each will be a Magic: The Gathering card.
+# "string" is the name of the variable to check for in the JSON element x.
+# "otherwise" is what the program should return 
+# if the variable doesn't exist; sometimes "", sometimes NA.
+# "after" is the nested list index in case we need to check 
+# elements of a nested list which may not exist.
+isItThere <- function(json,x,string,otherwise,after="") {
+  if(after!="") {if(is.null(json[[x]][[string]][after])) {return(otherwise)} else
+  {return(json[[x]][[string]][after])}} else
+    if(is.null(json[[x]][[string]])) {return(otherwise)} else {return(json[[x]][[string]])}}
+
+# Color-identity is expressed as up to five of the characters WUBR and G. Sort them to make factors.
+sapply(1:rows, function(x) {colorIdentity <- sort(c(isItThere(MTG.json,x,"colorIdentity",NA,1),
+                                               isItThere(MTG.json,x,"colorIdentity",NA,2),
+                                               isItThere(MTG.json,x,"colorIdentity",NA,3),
+                                               isItThere(MTG.json,x,"colorIdentity",NA,4),
+                                               isItThere(MTG.json,x,"colorIdentity",NA,5)))
+colorIdentity <- colorIdentity[!is.na(colorIdentity)]
+
+# Supertype, Type, and Subtype are collections of zero to three character strings                       
+supertype <- c(isItThere(MTG.json,x,"supertypes",NA,1),
+               isItThere(MTG.json,x,"supertypes",NA,2))
+supertype <-supertype[!is.na(supertype)]
+                            
+type <- c(isItThere(MTG.json,x,"types",NA,1),
+          isItThere(MTG.json,x,"types",NA,2))
+type <-type[!is.na(type)]
+                            
+subtype <- c(isItThere(MTG.json,x,"subtypes",NA,1),
+             isItThere(MTG.json,x,"subtypes",NA,2),
+             isItThere(MTG.json,x,"subtypes",NA,3))
+subtype <-subtype[!is.na(subtype)]
+
+# The list of printings is a collection of character-string abbreviations of set-names.                   
+# We will decompose it into printing dates later.
+printList <- c(unlist(lapply(1:length(MTG.json[[x]][["printings"]]),function (y)
+                            {MTG.json[[x]][["printings"]][[y]]})))
+  
+MTG.df[x,] <<- c(MTG.json[[x]][["name"]],     # We describe all variables as we name them below
+                 isItThere(MTG.json,x,"manaCost",0),
+                 paste(colorIdentity,collapse=""),
+                 MTG.json[[x]][["cmc"]],
+                 str_count(isItThere(MTG.json,x,"manaCost",""),"W"),
+                 str_count(isItThere(MTG.json,x,"manaCost",""),"U"),
+                 str_count(isItThere(MTG.json,x,"manaCost",""),"B"),
+                 str_count(isItThere(MTG.json,x,"manaCost",""),"R"),
+                 str_count(isItThere(MTG.json,x,"manaCost",""),"G"),
+                 paste(supertype,collapse=" "),
+                 paste(type,collapse=" "),
+                 paste(subtype,collapse=" "),
+                 isItThere(MTG.json,x,"text",NA),
+                 nchar(isItThere(MTG.json,x,"text","")),
+                 isItThere(MTG.json,x,"power",NA),
+                 isItThere(MTG.json,x,"toughness",NA),
+                 isItThere(MTG.json,x,"loyalty",NA),
+                 length(MTG.json[[x]][["rulings"]]),
+                 length(MTG.json[[x]][["legalities"]]),
+                 length(MTG.json[[x]][["printings"]]),
+                 paste(printList, collapse=" "))})
+```
+Now we add column names and types:
+```{r columnNames,cache=TRUE,results="hide"}
+MTG.df <- setNames(MTG.df,c("Name",                 # Character; MTG card name
+                            "ManaCost",             # Character; Mana Cost in typical online format
+                            "ColorIdentity",        # Factor; Color identity
+                            "ConvertedManaCost",    # Integer; number of mana required to cast card
+                            "White",                # Integer; number of white mana required
+                            "Blue",                 # Integer; number of blue mana required
+                            "Black",                # Integer; number of black mana required
+                            "Red",                  # Integer; number of red mana required
+                            "Green",                # Integer; number of green mana required
+                            "Supertype",            # Character; large categories of cards
+                            "Type",                 # Character; main card types
+                            "Subtype",              # Character; supplimentary types
+                            "Text",                 # Character; Rules text, not flavor text
+                            "TextLength",           # Integer; number of characters in Text
+                            "Power",                # Often an integer, sometimes a character
+                            "Toughness",            # Often an integer, sometimes a character
+                            "Loyalty",              # Integer; for Planeswalkers
+                            "Rulings",              # Number of rulings
+                            "Legalities",           # Number of legalities
+                            "Printings",            # Number of printings
+                            "PrintingsList"))       # Character; all set abbrvs, to make year-lists
+
+MTG.df <- transmute(MTG.df, Name=as.character(Name),
+                    ManaCost=as.character(ManaCost),
+                    ColorIdentity=as.factor(ColorIdentity),
+                    ConvertedManaCost=as.integer(ConvertedManaCost),
+                    White=as.integer(White),
+                    Blue=as.integer(Blue),
+                    Black=as.integer(Black),
+                    Red=as.integer(Red),
+                    Green=as.integer(Green),
+                    Supertype=as.character(Supertype),
+                    Type=as.character(Type),
+                    Subtype=as.character(Subtype),
+                    Text=as.character(Text),
+                    TextLength=as.integer(TextLength),
+                    Power=as.character(Power),         # Mostly integers, some odd characters
+                    Toughness=as.character(Toughness), # Mostly integers, some odd characters
+                    Loyalty=as.integer(Loyalty),
+                    Rulings=as.integer(Rulings),
+                    Legalities=as.integer(Legalities),
+                    Printings=as.integer(Printings),
+                    PrintingsList=as.character(PrintingsList))
+```
+The variable PrintingsList is not a convenient way to check when cards were published. The following mutation is an example of a series of functions we applied to the data to turn card-set abbreviations into printing years:
+```{r yearsExample}
+MTG.df <- mutate(MTG.df, y1993 = as.numeric(str_count(MTG.df$PrintingsList,"LEA") >= 1|
+                                           str_count(MTG.df$PrintingsList,"LEB") >= 1|
+                                           str_count(MTG.df$PrintingsList,"2ED") >= 1|
+                                           str_count(MTG.df$PrintingsList,"ARN") >= 1))
+# The sets Alpha, Beta, Second Edition, and Arabian Nights were printed in 1993.
+# We performed a similar mutation for every year up to 2018.
+```
+
+```{r years, include=FALSE}
+MTG.df <- mutate(MTG.df, y1994 = as.numeric(str_count(MTG.df$PrintingsList,"ATQ") >= 1|
+                                   str_count(MTG.df$PrintingsList,"3ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"LEG") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DRK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"FEM") >= 1),
+                 y1995 = as.numeric(str_count(MTG.df$PrintingsList,"4ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ICE") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CHR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"HML") >= 1),
+                 y1996 = as.numeric(str_count(MTG.df$PrintingsList,"ALL") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MIR") >= 1),
+                 y1997 = as.numeric(str_count(MTG.df$PrintingsList,"5ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"POR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"WTH") >= 1|
+                                   str_count(MTG.df$PrintingsList,"TMP") >= 1),
+                 y1998 = as.numeric(str_count(MTG.df$PrintingsList,"STH") >= 1|
+                                   str_count(MTG.df$PrintingsList,"EXO") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PO2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"UGL") >= 1|
+                                   str_count(MTG.df$PrintingsList,"USG") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ATH") >= 1),
+                 y1999 = as.numeric(str_count(MTG.df$PrintingsList,"ULG") >= 1|
+                                   str_count(MTG.df$PrintingsList,"6ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"UDS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PTK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"S99") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MMQ") >= 1|
+                                   str_count(MTG.df$PrintingsList,"BRB") >= 1),
+                 y2000 = as.numeric(str_count(MTG.df$PrintingsList,"NEM") >= 1|
+                                   str_count(MTG.df$PrintingsList,"S00") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PCY") >= 1|
+                                   str_count(MTG.df$PrintingsList,"INV") >= 1|
+                                   str_count(MTG.df$PrintingsList,"BTD") >= 1),
+                 y2001 = as.numeric(str_count(MTG.df$PrintingsList,"PLS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"7ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"APC") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ODY") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DKM") >= 1),
+                 y2002 = as.numeric(str_count(MTG.df$PrintingsList,"TOR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"JUD") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ONS") >= 1),
+                 y2003 = as.numeric(str_count(MTG.df$PrintingsList,"LGN") >= 1|
+                                   str_count(MTG.df$PrintingsList,"SCG") >= 1|
+                                   str_count(MTG.df$PrintingsList,"8ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MRD") >= 1),
+                 y2004 = as.numeric(str_count(MTG.df$PrintingsList,"DST") >= 1|
+                                   str_count(MTG.df$PrintingsList,"5DN") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CHK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"UNH") >= 1),
+                 y2005 = as.numeric(str_count(MTG.df$PrintingsList,"BOK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"SOK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"9ED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"RAV") >= 1),
+                 y2006 = as.numeric(str_count(MTG.df$PrintingsList,"GPT") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DIS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CSP") >= 1|
+                                   str_count(MTG.df$PrintingsList,"TSP") >= 1),
+                 y2007 = as.numeric(str_count(MTG.df$PrintingsList,"PLC") >= 1|
+                                   str_count(MTG.df$PrintingsList,"FUT") >= 1|
+                                   str_count(MTG.df$PrintingsList,"10E") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MED") >= 1|
+                                   str_count(MTG.df$PrintingsList,"LRW") >= 1|
+                                   str_count(MTG.df$PrintingsList,"EVG") >= 1),
+                 y2008 = as.numeric(str_count(MTG.df$PrintingsList,"MOR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"SHM") >= 1|
+                                   str_count(MTG.df$PrintingsList,"EVE") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DRB") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ME2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ALA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DD2") >= 1),
+                 y2009 = as.numeric(str_count(MTG.df$PrintingsList,"CON") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDC") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ARB") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M10") >= 1|
+                                   str_count(MTG.df$PrintingsList,"TD0") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V09") >= 1|
+                                   str_count(MTG.df$PrintingsList,"HOP") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ME3") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ZEN") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDD") >= 1|
+                                   str_count(MTG.df$PrintingsList,"H09") >= 1),
+                 y2010 = as.numeric(str_count(MTG.df$PrintingsList,"WWK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDE") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ROE") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DPA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ARC") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M11") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V10") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDF") >= 1|
+                                   str_count(MTG.df$PrintingsList,"SOM") >= 1|
+                                   str_count(MTG.df$PrintingsList,"TD0") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PD2") >= 1),
+                 y2011 = as.numeric(str_count(MTG.df$PrintingsList,"ME4") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MBS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDG") >= 1|
+                                   str_count(MTG.df$PrintingsList,"NPH") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CMD") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M12") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V11") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDH") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ISD") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PD3") >= 1),
+                 y2012 = as.numeric(str_count(MTG.df$PrintingsList,"DKA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDI") >= 1|
+                                   str_count(MTG.df$PrintingsList,"AVR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PC2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M13") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V12") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDJ") >= 1|
+                                   str_count(MTG.df$PrintingsList,"RTR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CM1") >= 1),
+                 y2013 = as.numeric(str_count(MTG.df$PrintingsList,"TD2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"GTC") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DGM") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MMA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M14") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V13") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDL") >= 1|
+                                   str_count(MTG.df$PrintingsList,"THS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"C13") >= 1),
+                 y2014 = as.numeric(str_count(MTG.df$PrintingsList,"BNG") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDM") >= 1|
+                                   str_count(MTG.df$PrintingsList,"JOU") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MD1") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CNS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"VMA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M15") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V14") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDN") >= 1|
+                                   str_count(MTG.df$PrintingsList,"KTK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"C14") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DD3") >= 1),
+                 y2015 = as.numeric(str_count(MTG.df$PrintingsList,"FRF") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDO") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DTK") >= 1|
+                                   str_count(MTG.df$PrintingsList,"TPR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MM2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"ORI") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V15") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDP") >= 1|
+                                   str_count(MTG.df$PrintingsList,"BFZ") >= 1|
+                                   str_count(MTG.df$PrintingsList,"EXP") >= 1|
+                                   str_count(MTG.df$PrintingsList,"C15") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PZ1") >= 1),
+                 y2016 = as.numeric(str_count(MTG.df$PrintingsList,"EXP") >= 1|
+                                   str_count(MTG.df$PrintingsList,"OGW") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDQ") >= 1|
+                                   str_count(MTG.df$PrintingsList,"W16") >= 1|
+                                   str_count(MTG.df$PrintingsList,"SOI") >= 1|
+                                   str_count(MTG.df$PrintingsList,"EMA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"EMN") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V16") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CN2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDR") >= 1|
+                                   str_count(MTG.df$PrintingsList,"KLD") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MPS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PZ2") >= 1|
+                                   str_count(MTG.df$PrintingsList,"C16") >= 1|
+                                   str_count(MTG.df$PrintingsList,"PCA") >= 1),
+                 y2017 = as.numeric(str_count(MTG.df$PrintingsList,"MPS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"AER") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MM3") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"W17") >= 1|
+                                   str_count(MTG.df$PrintingsList,"AKH") >= 1|
+                                   str_count(MTG.df$PrintingsList,"MPS") >= 1|
+                                   str_count(MTG.df$PrintingsList,"CMA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"E01") >= 1|
+                                   str_count(MTG.df$PrintingsList,"HOU") >= 1|
+                                   str_count(MTG.df$PrintingsList,"C17") >= 1|
+                                   str_count(MTG.df$PrintingsList,"XLN") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DDT") >= 1|
+                                   str_count(MTG.df$PrintingsList,"IMA") >= 1|
+                                   str_count(MTG.df$PrintingsList,"E02") >= 1|
+                                   str_count(MTG.df$PrintingsList,"V17") >= 1|
+                                   str_count(MTG.df$PrintingsList,"UST") >= 1),
+                 y2018 = as.numeric(str_count(MTG.df$PrintingsList,"RIX") >= 1|
+                                   str_count(MTG.df$PrintingsList,"A25") >= 1|
+                                   str_count(MTG.df$PrintingsList,"DOM") >= 1|
+                                   str_count(MTG.df$PrintingsList,"M19") >= 1))
+```
+
+The Text variable, as it is, is not helpful for algorithmically predicting color-identity. We count words relevant to each color using Mark Rosewater's "Mechanical Color Pie 2017" as a guide. Below, find the summation of words related to the color white as an example:
+
+```{r colorWordsEx}
+MTG.df <- mutate(MTG.df, WhiteWords = 0+str_count(MTG.df$Text,"exile") + 
+                                      str_count(MTG.df$Text,"prevent") +
+                                      str_count(MTG.df$Text,"defender") + 
+                                      str_count(MTG.df$Text,"double strike") +
+                                      str_count(MTG.df$Text,"first strike") + 
+                                      str_count(MTG.df$Text,"flying") +
+                                      str_count(MTG.df$Text,"indestructible") + 
+                                      str_count(MTG.df$Text,"lifelink") +
+                                      str_count(MTG.df$Text,"protection") +
+                                      str_count(MTG.df$Text,"token") +
+                                      str_count(MTG.df$Text,"vigilance") + 
+                                      str_count(MTG.df$Text,"Exile") + 
+                                      str_count(MTG.df$Text,"Prevent") +
+                                      str_count(MTG.df$Text,"Defender") + 
+                                      str_count(MTG.df$Text,"Double strike") +
+                                      str_count(MTG.df$Text,"First strike") + 
+                                      str_count(MTG.df$Text,"Flying") +
+                                      str_count(MTG.df$Text,"Indestructible") + 
+                                      str_count(MTG.df$Text,"Lifelink") +
+                                      str_count(MTG.df$Text,"Protection") +
+                                      str_count(MTG.df$Text,"Token") +
+                                      str_count(MTG.df$Text,"Vigilance"))
+MTG.df$WhiteWords[is.na(MTG.df$WhiteWords)] <- 0
+# We performed a similar process with every other color
+```
+
+```{r colorWords, include=FALSE}
+MTG.df <- mutate(MTG.df, BlueWords = 0+str_count(MTG.df$Text,"return") + 
+                                     str_count(MTG.df$Text,"draw") +
+                                     str_count(MTG.df$Text,"copy") + 
+                                     str_count(MTG.df$Text,"counter") +
+                                     str_count(MTG.df$Text,"flash") + 
+                                     str_count(MTG.df$Text,"flying") +
+                                     str_count(MTG.df$Text,"hexproof") + 
+                                     str_count(MTG.df$Text,"look") +
+                                     str_count(MTG.df$Text,"scry") +
+                                     str_count(MTG.df$Text,"token") +
+                                     str_count(MTG.df$Text,"untap") + 
+                                     str_count(MTG.df$Text,"Return") + 
+                                     str_count(MTG.df$Text,"Draw") +
+                                     str_count(MTG.df$Text,"Copy") + 
+                                     str_count(MTG.df$Text,"Counter") +
+                                     str_count(MTG.df$Text,"Flash") + 
+                                     str_count(MTG.df$Text,"Flying") +
+                                     str_count(MTG.df$Text,"Hexproof") + 
+                                     str_count(MTG.df$Text,"Look") +
+                                     str_count(MTG.df$Text,"Scry") +
+                                     str_count(MTG.df$Text,"Token") +
+                                     str_count(MTG.df$Text,"Untap"))
+MTG.df$BlueWords[is.na(MTG.df$BlueWords)] <- 0
+
+
+MTG.df <- mutate(MTG.df, BlackWords = 0 + str_count(MTG.df$Text,"sacrifice") + 
+                                      str_count(MTG.df$Text,"deathtouch") +
+                                      str_count(MTG.df$Text,"discard") + 
+                                      str_count(MTG.df$Text,"gain control") +
+                                      str_count(MTG.df$Text,"menace") + 
+                                      str_count(MTG.df$Text,"search your library") +
+                                      str_count(MTG.df$Text,"lose life") + 
+                                      str_count(MTG.df$Text,"loses life") +
+                                      str_count(MTG.df$Text,"graveyard") + 
+                                      str_count(MTG.df$Text,"Sacrifice") + 
+                                      str_count(MTG.df$Text,"Deathtouch") +
+                                      str_count(MTG.df$Text,"Discard") + 
+                                      str_count(MTG.df$Text,"Gain control") +
+                                      str_count(MTG.df$Text,"Menace") + 
+                                      str_count(MTG.df$Text,"Search your library") +
+                                      str_count(MTG.df$Text,"Lose life") + 
+                                      str_count(MTG.df$Text,"Loses life") + 
+                                      str_count(MTG.df$Text,"Graveyard"))
+MTG.df$BlackWords[is.na(MTG.df$BlackWords)] <- 0
+
+
+MTG.df <- mutate(MTG.df, RedWords = 0 + str_count(MTG.df$Text,"can't be countered") + 
+                                    str_count(MTG.df$Text,"copy") +
+                                    str_count(MTG.df$Text,"deal") + 
+                                    str_count(MTG.df$Text,"damage") +
+                                    str_count(MTG.df$Text,"double strike") + 
+                                    str_count(MTG.df$Text,"first strike") +
+                                    str_count(MTG.df$Text,"haste") + 
+                                    str_count(MTG.df$Text,"menace") +
+                                    str_count(MTG.df$Text,"must") +
+                                    str_count(MTG.df$Text,"random") +
+                                    str_count(MTG.df$Text,"attack") + 
+                                    str_count(MTG.df$Text,"Can't be countered") + 
+                                    str_count(MTG.df$Text,"Copy") +
+                                    str_count(MTG.df$Text,"Deal") + 
+                                    str_count(MTG.df$Text,"Damage") +
+                                    str_count(MTG.df$Text,"Double strike") + 
+                                    str_count(MTG.df$Text,"First strike") +
+                                    str_count(MTG.df$Text,"Haste") + 
+                                    str_count(MTG.df$Text,"Menace") +
+                                    str_count(MTG.df$Text,"Must") +
+                                    str_count(MTG.df$Text,"Random") +
+                                    str_count(MTG.df$Text,"Attack"))
+MTG.df$RedWords[is.na(MTG.df$RedWords)] <- 0
+
+
+MTG.df <- mutate(MTG.df, GreenWords = 0+str_count(MTG.df$Text,"can't be countered") + 
+                                      str_count(MTG.df$Text,"fight") +
+                                      str_count(MTG.df$Text,"reach") + 
+                                      str_count(MTG.df$Text,"trample") +
+                                      str_count(MTG.df$Text,"creature") + 
+                                      str_count(MTG.df$Text,"forest") +
+                                      str_count(MTG.df$Text,"land") + 
+                                      str_count(MTG.df$Text,"token") +
+                                      str_count(MTG.df$Text,"Can't be countered") + 
+                                      str_count(MTG.df$Text,"Fight") +
+                                      str_count(MTG.df$Text,"Reach") + 
+                                      str_count(MTG.df$Text,"Trample") +
+                                      str_count(MTG.df$Text,"Creature") + 
+                                      str_count(MTG.df$Text,"Forest") +
+                                      str_count(MTG.df$Text,"Land") + 
+                                      str_count(MTG.df$Text,"Token"))
+MTG.df$GreenWords[is.na(MTG.df$GreenWords)] <- 0
+```
+Some of these words are featured in more than one color. Nevertheless, they may prove invaluable in sorting. Observe the following:
+
+```{r identityByWords}
+table(MTG.df[MTG.df$WhiteWords>=4,]$ColorIdentity)
+table(MTG.df[MTG.df$BlueWords>=4,]$ColorIdentity)
+table(MTG.df[MTG.df$BlackWords>=4,]$ColorIdentity)
+table(MTG.df[MTG.df$RedWords>=4,]$ColorIdentity)
+table(MTG.df[MTG.df$GreenWords>=4,]$ColorIdentity)
+```
+One might find slight correlation between the presence of a color's symbol in the color-identity and the presence of related key-words.
+
+
+Now that preprocessing is complete, we may begin using visualizations to choose appropriate methods.
+
+\null 
+
+\noindent
+(Describe what actions were done, discuss our observations and conclusions. Describe each step of the data-mining technique used. Compare at least two models. Describe the model-validation technique we used to choose the best.)
+
+\section{Results}
+
+\section{Conclusions}
+
+\section{References}
+
+Schults, Robert. "Provides Magic: the Gathering Card Data in JSON Format." $MTG JSON$, 13 Nov. 2017, mtgjson.com/.
+
+\null 
+
+Rosewater, Mark. "Mechanical Color Pie 2017." $MAGIC:$ $THE$ $GATHERING$, Wizards of the Coast, 5 June 2017, magic.wizards.com/en/articles/archive/making-magic/mechanical-color-pie-2017-2017-06-05.
+
+\null 
+
+"RoboRosewater (\@RoboRosewater)." $Twitter$, 3 July 2015, twitter.com/RoboRosewater?ref_src=twsrc%5Egoogle%7Ctwcamp%5Eserp%7Ctwgr%5Eauthor.
+
+\null 
+
+"Gatherer." $Magic:$ $The$ $Gathering$, Wizards of the Coast, gatherer.wizards.com/Pages/Default.aspx.
