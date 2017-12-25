@@ -8,6 +8,8 @@
 # install.packages("ggplot2")
 # install.packages("stringi")
 # install.packages("plyr")
+# install.packages("scales")
+# install.packages("viridis")
 
 library(tidyverse)
 library(rjson)      # To read JSON
@@ -15,7 +17,9 @@ library(gtools)
 library(stringr)    # To interact with strings
 library(ggplot2)    # Nice plots
 library(stringi)    # Regex parsing
-library(plyr)      
+library(plyr)
+library(scales)
+library(viridis)
 
 setwd("/Users/Theodore/Desktop/R_Studio_Stuff/data")  # Change this to your own directory
 MTG.json <- fromJSON(file="AllCards.json",method='C') 
@@ -579,11 +583,14 @@ powerPlot2 <- qplot(Power,Toughness,data=MTG.simple) + geom_count() +
 powerPlot2
 # Same as above but no finicky powers and toughnesses
 
-myGradient <- colorRampPalette(c("Blue","Yellow","Red"))
+log10sqr_trans <- trans_new(name="log10sqr_trans",
+          transform = function(x){return(log10(x)**2)},
+          inverse = function(x){return(10**(x**(1/2)))},
+          domain=c(0.001,Inf))
 
 powerPlot3 <- qplot(Power,Toughness,data=MTG.simple) + geom_count(aes(color=ConvertedManaCost)) + 
-     scale_colour_gradientn(colours=myGradient(3)) + scale_fill_discrete(drop=FALSE) +
-     scale_x_discrete(drop=FALSE) + scale_size(breaks=c(1,3,10,33,100,333,1000,3333),range=c(1.3,12),trans="log10") +
+     scale_colour_viridis() + scale_fill_discrete(drop=FALSE) +
+     scale_x_discrete(drop=FALSE) + scale_size(breaks=c(1,3,10,33,100,333,1000,3333),range=c(1.3,12),trans=log10sqr_trans) +
      geom_abline(slope=1,color="Red",alpha=.25) +
      ggtitle("Magic: The Gathering Cards with simple P/T by Mana Cost")
 powerPlot3
